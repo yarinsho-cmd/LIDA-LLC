@@ -1,0 +1,256 @@
+generator client { provider = "prisma-client-js" }
+datasource db { provider = "sqlite"; url = env("DATABASE_URL") }
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String?
+  memberships   Membership[]
+  accounts      Account[]
+  sessions      Session[]
+  notes         Note[]
+  tasks         Task[]      @relation("TaskAssignee")
+  activities    Activity[]  @relation("ActivityActor")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Organization {
+  id           String       @id @default(cuid())
+  name         String
+  slug         String       @unique
+  memberships  Membership[]
+  contacts     Contact[]
+  companies    Company[]
+  properties   Property[]
+  pipelines    Pipeline[]
+  deals        Deal[]
+  tasks        Task[]
+  notes        Note[]
+  activities   Activity[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Membership {
+  id             String        @id @default(cuid())
+  userId         String
+  organizationId String
+  role           Role
+  user           User          @relation(fields: [userId], references: [id])
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  @@unique([userId, organizationId])
+}
+
+enum Role { OWNER ADMIN MEMBER VIEWER }
+
+model Company {
+  id             String        @id @default(cuid())
+  organizationId String
+  name           String
+  domain         String?
+  contacts       Contact[]
+  notes          Note[]
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  @@index([organizationId])
+}
+
+model Contact {
+  id             String        @id @default(cuid())
+  organizationId String
+  companyId      String?
+  firstName      String
+  lastName       String
+  email          String?
+  phone          String?
+  tags           String[]
+  notes          Note[]
+  tasks          Task[]
+  company        Company?      @relation(fields: [companyId], references: [id])
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  @@index([organizationId])
+}
+
+model Property {
+  id             String        @id @default(cuid())
+  organizationId String
+  title          String
+  address        String
+  city           String
+  state          String
+  postalCode     String
+  country        String
+  bedrooms       Int?
+  bathrooms      Float?
+  areaSqFt       Int?
+  price          Float?
+  status         PropertyStatus @default(ACTIVE)
+  units          Unit[]
+  media          Media[]
+  documents      Document[]
+  notes          Note[]
+  deals          Deal[]
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  @@index([organizationId])
+}
+enum PropertyStatus { ACTIVE UNDER_CONTRACT SOLD OFF_MARKET }
+
+model Unit {
+  id          String   @id @default(cuid())
+  propertyId  String
+  name        String
+  bedrooms    Int?
+  bathrooms   Float?
+  areaSqFt    Int?
+  property    Property @relation(fields: [propertyId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  @@index([propertyId])
+}
+
+model Pipeline {
+  id             String       @id @default(cuid())
+  organizationId String
+  name           String
+  stages         DealStage[]
+  deals          Deal[]
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  @@index([organizationId])
+}
+
+model DealStage {
+  id         String   @id @default(cuid())
+  pipelineId String
+  name       String
+  order      Int
+  pipeline   Pipeline @relation(fields: [pipelineId], references: [id])
+  deals      Deal[]
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  @@unique([pipelineId, order])
+  @@index([pipelineId])
+}
+
+model Deal {
+  id             String    @id @default(cuid())
+  organizationId String
+  pipelineId     String
+  stageId        String
+  title          String
+  value          Float?
+  closeDate      DateTime?
+  propertyId     String?
+  contactId      String?
+  pipeline       Pipeline   @relation(fields: [pipelineId], references: [id])
+  stage          DealStage  @relation(fields: [stageId], references: [id])
+  property       Property?  @relation(fields: [propertyId], references: [id])
+  contact        Contact?   @relation(fields: [contactId], references: [id])
+  notes          Note[]
+  tasks          Task[]
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  @@index([organizationId])
+}
+
+model Task {
+  id             String      @id @default(cuid())
+  organizationId String
+  title          String
+  description    String?
+  dueAt          DateTime?
+  completedAt    DateTime?
+  assigneeId     String?
+  contactId      String?
+  dealId         String?
+  assignee       User?       @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  contact        Contact?    @relation(fields: [contactId], references: [id])
+  deal           Deal?       @relation(fields: [dealId], references: [id])
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  @@index([organizationId])
+}
+
+model Note {
+  id             String      @id @default(cuid())
+  organizationId String
+  body           String
+  userId         String?
+  contactId      String?
+  propertyId     String?
+  dealId         String?
+  author         User?       @relation(fields: [userId], references: [id])
+  contact        Contact?    @relation(fields: [contactId], references: [id])
+  property       Property?   @relation(fields: [propertyId], references: [id])
+  deal           Deal?       @relation(fields: [dealId], references: [id])
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  @@index([organizationId])
+}
+
+model Media {
+  id         String   @id @default(cuid())
+  propertyId String
+  url        String
+  type       String
+  property   Property @relation(fields: [propertyId], references: [id])
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  @@index([propertyId])
+}
+
+model Document {
+  id         String   @id @default(cuid())
+  propertyId String
+  url        String
+  name       String
+  property   Property @relation(fields: [propertyId], references: [id])
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  @@index([propertyId])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([provider, providerAccountId])
+}
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+  @@unique([identifier, token])
+}
