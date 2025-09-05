@@ -1,0 +1,438 @@
+name: Scaffold MyPropFlow
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+
+jobs:
+  scaffold:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Generate Next.js app and backend (in mypropflow/)
+        run: |
+          set -euo pipefail
+          npx create-next-app@latest mypropflow --typescript --eslint --tailwind --app --use-npm --src-dir --no-import-alias --yes
+          cd mypropflow
+
+          npm i next-auth @auth/prisma-adapter @prisma/client zod bcrypt
+          npm i -D prisma
+
+          # Use SQLite in CI (works everywhere)
+          npx prisma init --datasource-provider sqlite
+          printf 'DATABASE_URL="file:./dev.db"\nNEXTAUTH_SECRET="dev-replace-with-openssl"\nNEXTAUTH_URL="http://localhost:3000"\n' > .env.local
+
+          # Prisma schema
+          cat > prisma/schema.prisma <<'PRISMA'
+          generator client { provider = "prisma-client-js" }
+          datasource db { provider = "sqlite"; url = env("DATABASE_URL") }
+
+          model User {
+            id            String    @id @default(cuid())
+            name          String?
+            email         String?   @unique
+            emailVerified DateTime?
+            image         String?
+            passwordHash  String?
+            memberships   Membership[]
+            accounts      Account[]
+            sessions      Session[]
+            notes         Note[]
+            tasks         Task[]      @relation("TaskAssignee")
+            activities    Activity[]  @relation("ActivityActor")
+            createdAt     DateTime @default(now())
+            updatedAt     DateTime @updatedAt
+          }
+
+          model Organization {
+            id           String       @id @default(cuid())
+            name         String
+            slug         String       @unique
+            memberships  Membership[]
+            contacts     Contact[]
+            companies    Company[]
+            properties   Property[]
+            pipelines    Pipeline[]
+            deals        Deal[]
+            tasks        Task[]
+            notes        Note[]
+            activities   Activity[]
+            createdAt    DateTime @default(now())
+            updatedAt    DateTime @updatedAt
+          }
+
+          model Membership {
+            id             String        @id @default(cuid())
+            userId         String
+            organizationId String
+            role           Role
+            user           User          @relation(fields: [userId], references: [id])
+            organization   Organization  @relation(fields: [organizationId], references: [id])
+            createdAt      DateTime @default(now())
+            updatedAt      DateTime @updatedAt
+            @@unique([userId, organizationId])
+          }
+
+          enum Role { OWNER ADMIN MEMBER VIEWER }
+
+          model Company {
+            id             String        @id @default(cuid())
+            organizationId String
+            name           String
+            domain         String?
+            contacts       Contact[]
+            notes          Note[]
+            organization   Organization  @relation(fields: [organizationId], references: [id])
+            createdAt      DateTime @default(now())
+            updatedAt      DateTime @updatedAt
+            @@index([organizationId])
+          }
+
+          model Contact {
+            id             String        @id @default(cuid())
+            organizationId String
+            companyId      String?
+            firstName      String
+            lastName       String
+            email          String?
+            phone          String?
+            tags           String[]
+            notes          Note[]
+            tasks          Task[]
+            company        Company?      @relation(fields: [companyId], references: [id])
+            organization   Organization  @relation(fields: [organizationId], references: [id])
+            createdAt      DateTime @default(now())
+            updatedAt      DateTime @updatedAt
+            @@index([organizationId])
+          }
+
+          model Property {
+            id             String        @id @default(cuid())
+            organizationId String
+            title          String
+            address        String
+            city           String
+            state          String
+            postalCode     String
+            country        String
+            bedrooms       Int?
+            bathrooms      Float?
+            areaSqFt       Int?
+            price          Float?
+            status         PropertyStatus @default(ACTIVE)
+            units          Unit[]
+            media          Media[]
+            documents      Document[]
+            notes          Note[]
+            deals          Deal[]
+            organization   Organization  @relation(fields: [organizationId], references: [id])
+            createdAt      DateTime @default(now())
+            updatedAt      DateTime @updatedAt
+            @@index([organizationId])
+          }
+          enum PropertyStatus { ACTIVE UNDER_CONTRACT SOLD OFF_MARKET }
+
+          model Unit {
+            id          String   @id @default(cuid())
+            propertyId  String
+            name        String
+            bedrooms    Int?
+            bathrooms   Float?
+            areaSqFt    Int?
+            property    Property @relation(fields: [propertyId], references: [id])
+            createdAt   DateTime @default(now())
+            updatedAt   DateTime @updatedAt
+            @@index([propertyId])
+          }
+
+          model Pipeline {
+            id             String       @id @default(cuid())
+            organizationId String
+            name           String
+            stages         DealStage[]
+            deals          Deal[]
+            organization   Organization @relation(fields: [organizationId], references: [id])
+            createdAt      DateTime @default(now())
+            updatedAt      DateTime @updatedAt
+            @@index([organizationId])
+          }
+
+          model DealStage {
+            id         String   @id @default(cuid())
+            pipelineId String
+            name       String
+            order      Int
+            pipeline   Pipeline @relation(fields: [pipelineId], references: [id])
+            deals      Deal[]
+            createdAt  DateTime @default(now())
+            updatedAt  DateTime @updatedAt
+            @@unique([pipelineId, order])
+            @@index([pipelineId])
+          }
+
+          model Deal {
+            id             String    @id @default(cuid())
+            organizationId String
+            pipelineId     String
+            stageId        String
+            title          String
+            value          Float?
+            closeDate      DateTime?
+            propertyId     String?
+            contactId      String?
+            pipeline       Pipeline   @relation(fields: [pipelineId], references: [id])
+            stage          DealStage  @relation(fields: [stageId], references: [id])
+            property       Property?  @relation(fields: [propertyId], references: [id])
+            contact        Contact?   @relation(fields: [contactId], references: [id])
+            notes          Note[]
+            tasks          Task[]
+            organization   Organization  @relation(fields: [organizationId], references: [id])
+            createdAt      DateTime @default(now())
+            updatedAt      DateTime @updatedAt
+            @@index([organizationId])
+          }
+
+          model Task {
+            id             String      @id @default(cuid())
+            organizationId String
+            title          String
+            description    String?
+            dueAt          DateTime?
+            completedAt    DateTime?
+            assigneeId     String?
+            contactId      String?
+            dealId         String?
+            assignee       User?       @relation("TaskAssignee", fields: [assigneeId], references: [id])
+            contact        Contact?    @relation(fields: [contactId], references: [id])
+            deal           Deal?       @relation(fields: [dealId], references: [id])
+            organization   Organization @relation(fields: [organizationId], references: [id])
+            createdAt      DateTime @default(now())
+            updatedAt      DateTime @updatedAt
+            @@index([organizationId])
+          }
+
+          model Note {
+            id             String      @id @default(cuid())
+            organizationId String
+            body           String
+            userId         String?
+            contactId      String?
+            propertyId     String?
+            dealId         String?
+            author         User?       @relation(fields: [userId], references: [id])
+            contact        Contact?    @relation(fields: [contactId], references: [id])
+            property       Property?   @relation(fields: [propertyId], references: [id])
+            deal           Deal?       @relation(fields: [dealId], references: [id])
+            organization   Organization @relation(fields: [organizationId], references: [id])
+            createdAt      DateTime @default(now())
+            updatedAt      DateTime @updatedAt
+            @@index([organizationId])
+          }
+
+          model Media {
+            id         String   @id @default(cuid())
+            propertyId String
+            url        String
+            type       String
+            property   Property @relation(fields: [propertyId], references: [id])
+            createdAt  DateTime @default(now())
+            updatedAt  DateTime @updatedAt
+            @@index([propertyId])
+          }
+
+          model Document {
+            id         String   @id @default(cuid())
+            propertyId String
+            url        String
+            name       String
+            property   Property @relation(fields: [propertyId], references: [id])
+            createdAt  DateTime @default(now())
+            updatedAt  DateTime @updatedAt
+            @@index([propertyId])
+          }
+
+          model Account {
+            id                String  @id @default(cuid())
+            userId            String
+            type              String
+            provider          String
+            providerAccountId String
+            refresh_token     String?
+            access_token      String?
+            expires_at        Int?
+            token_type        String?
+            scope             String?
+            id_token          String?
+            session_state     String?
+            user              User @relation(fields: [userId], references: [id], onDelete: Cascade)
+            @@unique([provider, providerAccountId])
+          }
+          model Session {
+            id           String   @id @default(cuid())
+            sessionToken String   @unique
+            userId       String
+            expires      DateTime
+            user         User @relation(fields: [userId], references: [id], onDelete: Cascade)
+          }
+          model VerificationToken {
+            identifier String
+            token      String   @unique
+            expires    DateTime
+            @@unique([identifier, token])
+          }
+          PRISMA
+
+          # lib/prisma
+          mkdir -p src/lib
+          cat > src/lib/prisma.ts <<'TS'
+          import { PrismaClient } from '@prisma/client';
+
+          const globalForPrisma = global as unknown as { prisma?: PrismaClient };
+
+          export const prisma =
+            globalForPrisma.prisma ??
+            new PrismaClient({
+              log: ['warn', 'error'],
+            });
+
+          if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+          TS
+
+          # NextAuth route
+          mkdir -p src/app/api/auth/[...nextauth]
+          cat > src/app/api/auth/[...nextauth]/route.ts <<'TS'
+          import NextAuth, { type NextAuthOptions } from 'next-auth';
+          import Credentials from 'next-auth/providers/credentials';
+          import { PrismaAdapter } from '@auth/prisma-adapter';
+          import { prisma } from '../../../../lib/prisma';
+          import bcrypt from 'bcrypt';
+
+          export const authOptions: NextAuthOptions = {
+            adapter: PrismaAdapter(prisma) as any,
+            session: { strategy: 'database' },
+            pages: { signIn: '/sign-in' },
+            providers: [
+              Credentials({
+                name: 'Email & Password',
+                credentials: {
+                  email: { label: 'Email', type: 'email' },
+                  password: { label: 'Password', type: 'password' },
+                },
+                async authorize(credentials) {
+                  if (!credentials?.email || !credentials?.password) return null;
+                  const user = await prisma.user.findUnique({ where: { email: credentials.email } });
+                  if (!user?.passwordHash) return null;
+                  const ok = await bcrypt.compare(credentials.password, user.passwordHash);
+                  return ok ? { id: user.id, name: user.name ?? '', email: user.email ?? '' } : null;
+                },
+              }),
+            ],
+          };
+          const handler = NextAuth(authOptions);
+          export { handler as GET, handler as POST };
+          TS
+
+          # Middleware
+          cat > middleware.ts <<'TS'
+          export { default } from 'next-auth/middleware';
+
+          export const config = {
+            matcher: ['/((?!api/auth|_next|favicon.ico|public|sign-in).*)'],
+          };
+          TS
+
+          # Sign-in page
+          mkdir -p src/app/sign-in
+          cat > src/app/sign-in/page.tsx <<'TSX'
+          'use client';
+
+          import { useState } from 'react';
+          import { signIn } from 'next-auth/react';
+          import { useRouter } from 'next/navigation';
+
+          export default function SignInPage() {
+            const router = useRouter();
+            const [email, setEmail] = useState('');
+            const [password, setPassword] = useState('');
+            async function onSubmit(e: React.FormEvent) {
+              e.preventDefault();
+              const res = await signIn('credentials', { email, password, redirect: false });
+              if (res?.ok) router.push('/');
+              else alert('Invalid credentials');
+            }
+            return (
+              <main className="min-h-screen flex items-center justify-center p-6">
+                <form onSubmit={onSubmit} className="w-full max-w-sm space-y-3">
+                  <h1 className="text-2xl font-semibold">Sign in</h1>
+                  <input className="border rounded w-full p-2" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} />
+                  <input className="border rounded w-full p-2" type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} />
+                  <button className="bg-black text-white px-4 py-2 rounded w-full" type="submit">Continue</button>
+                </form>
+              </main>
+            );
+          }
+          TSX
+
+          # Dashboard
+          cat > src/app/page.tsx <<'TSX'
+          export default function Dashboard() {
+            return (
+              <main className="p-8 space-y-4">
+                <h1 className="text-2xl font-semibold">Dashboard</h1>
+                <ul className="list-disc pl-6">
+                  <li>Contacts</li>
+                  <li>Properties</li>
+                  <li>Deals Pipeline</li>
+                </ul>
+              </main>
+            );
+          }
+          TSX
+
+          # Seed script
+          cat > prisma/seed.js <<'JS'
+          const { PrismaClient } = require('@prisma/client');
+          const bcrypt = require('bcrypt');
+          const prisma = new PrismaClient();
+
+          async function main() {
+            const passwordHash = await bcrypt.hash('admin123', 10);
+            const user = await prisma.user.upsert({
+              where: { email: 'admin@example.com' },
+              update: {},
+              create: { email: 'admin@example.com', name: 'Admin', passwordHash },
+            });
+            const org = await prisma.organization.upsert({
+              where: { slug: 'default' },
+              update: {},
+              create: { name: 'Default Org', slug: 'default' },
+            });
+            await prisma.membership.upsert({
+              where: { userId_organizationId: { userId: user.id, organizationId: org.id } },
+              update: { role: 'OWNER' },
+              create: { userId: user.id, organizationId: org.id, role: 'OWNER' },
+            });
+            console.log('Seeded admin and org:', user.email, org.slug);
+          }
+          main().catch(e => { console.error(e); process.exit(1); }).finally(() => prisma.$disconnect());
+          JS
+
+          # Update package.json scripts
+          node -e "const fs=require('fs');const p='./package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.scripts={...j.scripts,db: 'echo Using SQLite (no DB container needed)', 'prisma:generate':'prisma generate','prisma:migrate':'prisma migrate dev','seed':'node prisma/seed.js','dev':'next dev'};fs.writeFileSync(p, JSON.stringify(j,null,2));"
+
+          # Prepare client once (optional in CI)
+          npx prisma generate
+
+      - name: Commit generated app
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Scaffold MyPropFlow app (Next.js + Prisma + NextAuth) in mypropflow/"
+          
