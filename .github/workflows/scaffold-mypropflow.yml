@@ -15,22 +15,28 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: npm
 
-      - name: Generate Next.js app and backend (in mypropflow/)
+      - name: Reset existing mypropflow folder (if any)
         run: |
-          set -euo pipefail
-          npx create-next-app@latest mypropflow --typescript --eslint --tailwind --app --use-npm --src-dir --no-import-alias --yes
-          cd mypropflow
+          git rm -r --cached mypropflow || true
+          rm -rf mypropflow
 
+      - name: Generate Next.js app (in mypropflow/)
+        run: |
+          npx create-next-app@latest mypropflow --typescript --eslint --tailwind --app --use-npm --src-dir --no-import-alias --yes
+
+      - name: Add backend deps and Prisma (SQLite)
+        working-directory: mypropflow
+        run: |
+          npm install
           npm i next-auth @auth/prisma-adapter @prisma/client zod bcrypt
           npm i -D prisma
-
-          # Use SQLite in CI (works everywhere)
           npx prisma init --datasource-provider sqlite
           printf 'DATABASE_URL="file:./dev.db"\nNEXTAUTH_SECRET="dev-replace-with-openssl"\nNEXTAUTH_URL="http://localhost:3000"\n' > .env.local
 
-          # Prisma schema
+      - name: Write Prisma schema
+        working-directory: mypropflow
+        run: |
           cat > prisma/schema.prisma <<'PRISMA'
           generator client { provider = "prisma-client-js" }
           datasource db { provider = "sqlite"; url = env("DATABASE_URL") }
@@ -290,8 +296,10 @@ jobs:
           }
           PRISMA
 
-          # lib/prisma
-          mkdir -p src/lib
+      - name: Add app code (NextAuth route, middleware, pages, seed)
+        working-directory: mypropflow
+        run: |
+          mkdir -p src/lib src/app/api/auth/[...nextauth] src/app/sign-in
           cat > src/lib/prisma.ts <<'TS'
           import { PrismaClient } from '@prisma/client';
 
@@ -306,8 +314,6 @@ jobs:
           if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
           TS
 
-          # NextAuth route
-          mkdir -p src/app/api/auth/[...nextauth]
           cat > src/app/api/auth/[...nextauth]/route.ts <<'TS'
           import NextAuth, { type NextAuthOptions } from 'next-auth';
           import Credentials from 'next-auth/providers/credentials';
@@ -340,7 +346,6 @@ jobs:
           export { handler as GET, handler as POST };
           TS
 
-          # Middleware
           cat > middleware.ts <<'TS'
           export { default } from 'next-auth/middleware';
 
@@ -349,8 +354,6 @@ jobs:
           };
           TS
 
-          # Sign-in page
-          mkdir -p src/app/sign-in
           cat > src/app/sign-in/page.tsx <<'TSX'
           'use client';
 
@@ -381,7 +384,6 @@ jobs:
           }
           TSX
 
-          # Dashboard
           cat > src/app/page.tsx <<'TSX'
           export default function Dashboard() {
             return (
@@ -397,7 +399,6 @@ jobs:
           }
           TSX
 
-          # Seed script
           cat > prisma/seed.js <<'JS'
           const { PrismaClient } = require('@prisma/client');
           const bcrypt = require('bcrypt');
@@ -425,14 +426,22 @@ jobs:
           main().catch(e => { console.error(e); process.exit(1); }).finally(() => prisma.$disconnect());
           JS
 
-          # Update package.json scripts
-          node -e "const fs=require('fs');const p='./package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.scripts={...j.scripts,db: 'echo Using SQLite (no DB container needed)', 'prisma:generate':'prisma generate','prisma:migrate':'prisma migrate dev','seed':'node prisma/seed.js','dev':'next dev'};fs.writeFileSync(p, JSON.stringify(j,null,2));"
+          node -e "const fs=require('fs');const p='./package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.scripts={...j.scripts,'prisma:generate':'prisma generate','prisma:migrate':'prisma migrate dev','seed':'node prisma/seed.js','dev':'next dev'};fs.writeFileSync(p, JSON.stringify(j,null,2));"
 
-          # Prepare client once (optional in CI)
-          npx prisma generate
+      - name: Create initial migration (files only)
+        working-directory: mypropflow
+        run: npx prisma migrate dev --name init --create-only
+
+      - name: Generate Prisma client
+        working-directory: mypropflow
+        run: npx prisma generate
+
+      - name: Build to validate
+        working-directory: mypropflow
+        run: npm run build
 
       - name: Commit generated app
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Scaffold MyPropFlow app (Next.js + Prisma + NextAuth) in mypropflow/"
-          
+          commit_message: "Rebuild MyPropFlow app (Next.js + Prisma + NextAuth) in mypropflow/"
+          file_pattern: mypropflow/**
