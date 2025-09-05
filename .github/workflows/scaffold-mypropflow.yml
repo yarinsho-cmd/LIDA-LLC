@@ -23,25 +23,20 @@ jobs:
           git rm -r --cached mypropflow || true
           rm -rf mypropflow
 
-      - name: Create Next.js app
+      - name: Create Next.js app (retry)
         run: |
-          npx create-next-app@latest mypropflow --typescript --eslint --tailwind --app --use-npm --src-dir --no-import-alias --yes
+          set -euxo pipefail
+          for i in 1 2 3; do
+            npx --yes create-next-app@latest mypropflow --typescript --eslint --tailwind --app --use-npm --src-dir --no-import-alias --yes && break || sleep 5
+          done
 
-      - name: Add backend deps and lockfile (no install)
+      - name: Add app code (Prisma schema, NextAuth route, middleware, pages)
         working-directory: mypropflow
         run: |
-          npm i next-auth @auth/prisma-adapter @prisma/client zod bcrypt
-          npm i -D prisma
-          npm install --package-lock-only
+          set -euo pipefail
+          mkdir -p prisma src/lib src/app/api/auth/[...nextauth] src/app/sign-in
 
-      - name: Write environment for local dev
-        working-directory: mypropflow
-        run: |
-          printf 'DATABASE_URL="file:./dev.db"\nNEXTAUTH_SECRET="dev-replace-with-openssl"\nNEXTAUTH_URL="http://localhost:3000"\n' > .env.local
-
-      - name: Write Prisma schema
-        working-directory: mypropflow
-        run: |
+          # prisma schema (SQLite)
           cat > prisma/schema.prisma <<'PRISMA'
           generator client { provider = "prisma-client-js" }
           datasource db { provider = "sqlite"; url = env("DATABASE_URL") }
@@ -301,24 +296,15 @@ jobs:
           }
           PRISMA
 
-      - name: Add app code (NextAuth route, middleware, pages, seed)
-        working-directory: mypropflow
-        run: |
-          mkdir -p src/lib src/app/api/auth/[...nextauth] src/app/sign-in
+          # minimal app code
           cat > src/lib/prisma.ts <<'TS'
           import { PrismaClient } from '@prisma/client';
-
           const globalForPrisma = global as unknown as { prisma?: PrismaClient };
-
-          export const prisma =
-            globalForPrisma.prisma ??
-            new PrismaClient({
-              log: ['warn', 'error'],
-            });
-
+          export const prisma = globalForPrisma.prisma ?? new PrismaClient({ log: ['warn','error'] });
           if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
           TS
 
+          mkdir -p src/app/api/auth/[...nextauth]
           cat > src/app/api/auth/[...nextauth]/route.ts <<'TS'
           import NextAuth, { type NextAuthOptions } from 'next-auth';
           import Credentials from 'next-auth/providers/credentials';
@@ -353,15 +339,14 @@ jobs:
 
           cat > middleware.ts <<'TS'
           export { default } from 'next-auth/middleware';
-
           export const config = {
             matcher: ['/((?!api/auth|_next|favicon.ico|public|sign-in).*)'],
           };
           TS
 
+          mkdir -p src/app/sign-in
           cat > src/app/sign-in/page.tsx <<'TSX'
           'use client';
-
           import { useState } from 'react';
           import { signIn } from 'next-auth/react';
           import { useRouter } from 'next/navigation';
@@ -408,7 +393,6 @@ jobs:
           const { PrismaClient } = require('@prisma/client');
           const bcrypt = require('bcrypt');
           const prisma = new PrismaClient();
-
           async function main() {
             const passwordHash = await bcrypt.hash('admin123', 10);
             const user = await prisma.user.upsert({
@@ -430,6 +414,16 @@ jobs:
           }
           main().catch(e => { console.error(e); process.exit(1); }).finally(() => prisma.$disconnect());
           JS
+
+      - name: Add required dependencies to package.json (no install)
+        working-directory: mypropflow
+        run: |
+          node -e "const fs=require('fs');const p='./package.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.dependencies={...j.dependencies,'next-auth':'^4.24.7','@auth/prisma-adapter':'^1.7.4','@prisma/client':'^5.19.0','zod':'^3.23.8','bcrypt':'^5.1.1'};j.devDependencies={...j.devDependencies,'prisma':'^5.19.0'};j.scripts={...j.scripts,'prisma:generate':'prisma generate','prisma:migrate':'prisma migrate dev','seed':'node prisma/seed.js','dev':'next dev'};fs.writeFileSync(p, JSON.stringify(j,null,2));"
+
+      - name: Write .env.local template
+        working-directory: mypropflow
+        run: |
+          printf 'DATABASE_URL="file:./dev.db"\nNEXTAUTH_SECRET="dev-replace-with-openssl"\nNEXTAUTH_URL="http://localhost:3000"\n' > .env.local
 
       - name: Commit generated app
         uses: stefanzweifel/git-auto-commit-action@v5
